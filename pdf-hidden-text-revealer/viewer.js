@@ -1,5 +1,5 @@
 import * as pdfjsLib from "./vendor/pdf.mjs";
-import { PDFDocument, degrees } from "./vendor/pdf-lib.esm.min.js";
+import { PDFDocument, degrees, rgb } from "./vendor/pdf-lib.esm.min.js";
 
 const extension = globalThis.browser ?? globalThis.chrome;
 
@@ -142,6 +142,104 @@ function candidateItemGroups(items, candidates) {
   });
 }
 
+function itemBounds(item, styles, viewport) {
+  const transform = pdfjsLib.Util.transform(viewport.transform, item.transform);
+  const style = styles[item.fontName] || {};
+  const fontHeight = Math.hypot(transform[2], transform[3]);
+  const fontAscent = style.ascent
+    ? style.ascent * fontHeight
+    : style.descent
+      ? (1 + style.descent) * fontHeight
+      : fontHeight;
+  return {
+    left: transform[4],
+    top: transform[5] - fontAscent,
+    width: Math.max(item.width * viewport.scale, fontHeight),
+    height: Math.max(fontHeight, 1),
+  };
+}
+
+function isNearlyUniform(imageData) {
+  const counts = new Map();
+  let dominant = 0;
+  const pixels = imageData.data;
+  const step = Math.max(1, Math.floor((imageData.width * imageData.height) / 12000));
+  let sampled = 0;
+
+  for (let pixel = 0; pixel < imageData.width * imageData.height; pixel += step) {
+    const offset = pixel * 4;
+    const key = `${pixels[offset] >> 4},${pixels[offset + 1] >> 4},${pixels[offset + 2] >> 4}`;
+    const count = (counts.get(key) || 0) + 1;
+    counts.set(key, count);
+    dominant = Math.max(dominant, count);
+    sampled += 1;
+  }
+  return sampled > 0 && dominant / sampled >= 0.985;
+}
+
+async function coveredTextGroups(page, textContent) {
+  const viewport = page.getViewport({ scale: 2 });
+  const canvas = document.createElement("canvas");
+  canvas.width = Math.ceil(viewport.width);
+  canvas.height = Math.ceil(viewport.height);
+  const context = canvas.getContext("2d", { alpha: false, willReadFrequently: true });
+  await page.render({ canvasContext: context, viewport }).promise;
+
+  const groups = [];
+  for (const item of textContent.items) {
+    if (!item.str?.trim()) continue;
+    // Symbol-font bullets often decode only to a Private Use code point, which
+    // cannot be re-encoded reliably as selectable Unicode text.
+    if (/^[\p{Private_Use}\s]+$/u.test(item.str)) continue;
+    const bounds = itemBounds(item, textContent.styles, viewport);
+    const left = Math.max(0, Math.floor(bounds.left));
+    const top = Math.max(0, Math.floor(bounds.top));
+    const right = Math.min(canvas.width, Math.ceil(bounds.left + bounds.width));
+    const bottom = Math.min(canvas.height, Math.ceil(bounds.top + bounds.height));
+    if (right - left < 2 || bottom - top < 2) continue;
+    const pixels = context.getImageData(left, top, right - left, bottom - top);
+    if (isNearlyUniform(pixels)) {
+      groups.push({
+        candidate: { text: item.str, reason: "文字位置が単色（Box等による遮蔽候補）" },
+        items: [item],
+      });
+    }
+  }
+  return groups;
+}
+
+function mergeCandidateGroups(...groupSets) {
+  const merged = new Map();
+  for (const groups of groupSets) {
+    for (const group of groups) {
+      for (const item of group.items) {
+        const existing = merged.get(item);
+        if (existing) {
+          if (!existing.candidate.reason.includes(group.candidate.reason)) {
+            existing.candidate.reason += ` / ${group.candidate.reason}`;
+          }
+        } else {
+          merged.set(item, { candidate: { ...group.candidate }, items: [item] });
+        }
+      }
+    }
+  }
+  return [...merged.values()];
+}
+
+function pageFontData(page, styles) {
+  const fonts = {};
+  for (const fontName of Object.keys(styles)) {
+    try {
+      const font = page.commonObjs.get(fontName);
+      if (font?.data) fonts[fontName] = font.data;
+    } catch (error) {
+      console.warn(`フォント ${fontName} を取得できませんでした。`, error);
+    }
+  }
+  return fonts;
+}
+
 function placeCandidateItem(container, item, styles, viewport, reason) {
   const transform = pdfjsLib.Util.transform(viewport.transform, item.transform);
   const style = styles[item.fontName] || {};
@@ -169,60 +267,32 @@ function placeCandidateItem(container, item, styles, viewport, reason) {
   container.append(marker);
 }
 
-async function canvasToPngBytes(canvas) {
-  const blob = await new Promise((resolve, reject) => {
-    canvas.toBlob((value) => value ? resolve(value) : reject(new Error("PNGの生成に失敗しました。")), "image/png");
-  });
-  return new Uint8Array(await blob.arrayBuffer());
-}
-
-async function candidatePng(item, style) {
-  const fontHeight = Math.max(item.height || 0, Math.hypot(item.transform[2], item.transform[3]), 1);
-  const ascentRatio = Number.isFinite(style.ascent) ? style.ascent : 0.8;
-  const descentRatio = Number.isFinite(style.descent) ? style.descent : -0.2;
-  const boxHeight = Math.max((ascentRatio - descentRatio) * fontHeight, fontHeight);
-  const width = Math.max(item.width, fontHeight);
-  const pixelScale = 4;
-  const canvas = document.createElement("canvas");
-  canvas.width = Math.max(1, Math.ceil(width * pixelScale));
-  canvas.height = Math.max(1, Math.ceil(boxHeight * pixelScale));
-  const context = canvas.getContext("2d");
-  context.scale(pixelScale, pixelScale);
-  context.font = `${fontHeight}px ${style.fontFamily || "sans-serif"}`;
-  context.textBaseline = "alphabetic";
-  context.fillStyle = "#111111";
-  const measuredWidth = context.measureText(item.str).width;
-  if (measuredWidth > 0) context.scale(width / measuredWidth, 1);
-  context.fillText(item.str, 0, ascentRatio * fontHeight);
-
-  return {
-    bytes: await canvasToPngBytes(canvas),
-    width,
-    height: boxHeight,
-    descent: descentRatio * fontHeight,
-  };
-}
-
 async function repairPdf(sourceBytes, pageRecords) {
   const document = await PDFDocument.load(sourceBytes, { updateMetadata: false });
+  document.registerFontkit(globalThis.fontkit);
   const pages = document.getPages();
+  const embeddedFonts = new Map();
 
   for (let pageIndex = 0; pageIndex < pageRecords.length; pageIndex += 1) {
     const page = pages[pageIndex];
-    const { groups, styles } = pageRecords[pageIndex];
+    const { groups, fonts } = pageRecords[pageIndex];
     for (const group of groups) {
       for (const item of group.items) {
-        const style = styles[item.fontName] || {};
-        const imageData = await candidatePng(item, style);
-        const image = await document.embedPng(imageData.bytes);
+        const fontData = fonts[item.fontName];
+        if (!fontData) continue;
+        let font = embeddedFonts.get(fontData);
+        if (!font) {
+          font = await document.embedFont(fontData, { subset: true });
+          embeddedFonts.set(fontData, font);
+        }
+        const size = Math.max(Math.hypot(item.transform[2], item.transform[3]), 1);
         const angle = Math.atan2(item.transform[1], item.transform[0]);
-        const x = item.transform[4] - Math.sin(angle) * imageData.descent;
-        const y = item.transform[5] + Math.cos(angle) * imageData.descent;
-        page.drawImage(image, {
-          x,
-          y,
-          width: imageData.width,
-          height: imageData.height,
+        page.drawText(item.str, {
+          x: item.transform[4],
+          y: item.transform[5],
+          size,
+          font,
+          color: rgb(0.07, 0.07, 0.07),
           rotate: degrees(angle * 180 / Math.PI),
         });
       }
@@ -269,7 +339,11 @@ async function extract(file) {
   setStatus("PDFを読み込んでいます…");
 
   const sourceBytes = new Uint8Array(await file.arrayBuffer());
-  const analysisTask = pdfjsLib.getDocument({ data: sourceBytes.slice() });
+  const analysisTask = pdfjsLib.getDocument({
+    data: sourceBytes.slice(),
+    disableFontFace: true,
+    fontExtraProperties: true,
+  });
   const analysisPdf = await analysisTask.promise;
   const pages = [];
   const pageRecords = [];
@@ -281,10 +355,14 @@ async function extract(file) {
     const textContent = await page.getTextContent({ includeMarkedContent: true });
     const text = textForPage(textContent.items);
     const candidates = hiddenTextCandidates(await page.getOperatorList());
-    const groups = candidateItemGroups(textContent.items, candidates);
-    hiddenCount += candidates.length;
+    const attributeGroups = candidateItemGroups(textContent.items, candidates);
+    const coveredGroups = await coveredTextGroups(page, textContent);
+    const groups = mergeCandidateGroups(attributeGroups, coveredGroups);
+    const mergedCandidates = groups.map(({ candidate }) => candidate);
+    const fonts = pageFontData(page, textContent.styles);
+    hiddenCount += groups.length;
     pages.push(`--- Page ${pageNumber} ---\n${text}`);
-    pageRecords.push({ text, textContent, candidates, groups, styles: textContent.styles });
+    pageRecords.push({ text, textContent, candidates: mergedCandidates, groups, fonts });
   }
 
   setStatus(`不可視候補 ${hiddenCount} 件をPDFへ書き込んでいます…`);

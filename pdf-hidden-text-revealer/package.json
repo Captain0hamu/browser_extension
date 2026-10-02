@@ -11,6 +11,7 @@
   "license": "ISC",
   "type": "module",
   "dependencies": {
+    "@pdf-lib/fontkit": "^1.1.1",
     "pdf-lib": "^1.17.1",
     "pdfjs-dist": "^5.4.296"
   }
