@@ -1,4 +1,5 @@
 import * as pdfjsLib from "./vendor/pdf.mjs";
+import { PDFDocument, degrees } from "./vendor/pdf-lib.esm.min.js";
 
 const extension = globalThis.browser ?? globalThis.chrome;
 
@@ -9,12 +10,16 @@ const searchInput = document.querySelector("#search");
 const showHiddenInput = document.querySelector("#show-hidden");
 const copyButton = document.querySelector("#copy");
 const downloadButton = document.querySelector("#download");
+const downloadPdfButton = document.querySelector("#download-pdf");
 const status = document.querySelector("#status");
 const results = document.querySelector("#results");
 const pageTemplate = document.querySelector("#page-template");
 
 let extractedText = "";
+let repairedPdfBytes = null;
 let documentName = "document";
+
+results.classList.toggle("hide-hidden-overlay", !showHiddenInput.checked);
 
 function setStatus(message) {
   status.textContent = message;
@@ -164,6 +169,69 @@ function placeCandidateItem(container, item, styles, viewport, reason) {
   container.append(marker);
 }
 
+async function canvasToPngBytes(canvas) {
+  const blob = await new Promise((resolve, reject) => {
+    canvas.toBlob((value) => value ? resolve(value) : reject(new Error("PNGの生成に失敗しました。")), "image/png");
+  });
+  return new Uint8Array(await blob.arrayBuffer());
+}
+
+async function candidatePng(item, style) {
+  const fontHeight = Math.max(item.height || 0, Math.hypot(item.transform[2], item.transform[3]), 1);
+  const ascentRatio = Number.isFinite(style.ascent) ? style.ascent : 0.8;
+  const descentRatio = Number.isFinite(style.descent) ? style.descent : -0.2;
+  const boxHeight = Math.max((ascentRatio - descentRatio) * fontHeight, fontHeight);
+  const width = Math.max(item.width, fontHeight);
+  const pixelScale = 4;
+  const canvas = document.createElement("canvas");
+  canvas.width = Math.max(1, Math.ceil(width * pixelScale));
+  canvas.height = Math.max(1, Math.ceil(boxHeight * pixelScale));
+  const context = canvas.getContext("2d");
+  context.scale(pixelScale, pixelScale);
+  context.font = `${fontHeight}px ${style.fontFamily || "sans-serif"}`;
+  context.textBaseline = "alphabetic";
+  context.fillStyle = "#111111";
+  const measuredWidth = context.measureText(item.str).width;
+  if (measuredWidth > 0) context.scale(width / measuredWidth, 1);
+  context.fillText(item.str, 0, ascentRatio * fontHeight);
+
+  return {
+    bytes: await canvasToPngBytes(canvas),
+    width,
+    height: boxHeight,
+    descent: descentRatio * fontHeight,
+  };
+}
+
+async function repairPdf(sourceBytes, pageRecords) {
+  const document = await PDFDocument.load(sourceBytes, { updateMetadata: false });
+  const pages = document.getPages();
+
+  for (let pageIndex = 0; pageIndex < pageRecords.length; pageIndex += 1) {
+    const page = pages[pageIndex];
+    const { groups, styles } = pageRecords[pageIndex];
+    for (const group of groups) {
+      for (const item of group.items) {
+        const style = styles[item.fontName] || {};
+        const imageData = await candidatePng(item, style);
+        const image = await document.embedPng(imageData.bytes);
+        const angle = Math.atan2(item.transform[1], item.transform[0]);
+        const x = item.transform[4] - Math.sin(angle) * imageData.descent;
+        const y = item.transform[5] + Math.cos(angle) * imageData.descent;
+        page.drawImage(image, {
+          x,
+          y,
+          width: imageData.width,
+          height: imageData.height,
+          rotate: degrees(angle * 180 / Math.PI),
+        });
+      }
+    }
+  }
+
+  return document.save();
+}
+
 async function renderPage(page, canvas, pageWrap, viewport) {
   const pixelRatio = window.devicePixelRatio || 1;
   const context = canvas.getContext("2d", { alpha: false });
@@ -191,27 +259,43 @@ function applySearch() {
 async function extract(file) {
   results.replaceChildren();
   extractedText = "";
+  repairedPdfBytes = null;
   documentName = file.name.replace(/\.pdf$/i, "") || "document";
   searchInput.value = "";
   searchInput.disabled = true;
   copyButton.disabled = true;
   downloadButton.disabled = true;
+  downloadPdfButton.disabled = true;
   setStatus("PDFを読み込んでいます…");
 
-  const bytes = new Uint8Array(await file.arrayBuffer());
-  const loadingTask = pdfjsLib.getDocument({ data: bytes });
-  const pdf = await loadingTask.promise;
+  const sourceBytes = new Uint8Array(await file.arrayBuffer());
+  const analysisTask = pdfjsLib.getDocument({ data: sourceBytes.slice() });
+  const analysisPdf = await analysisTask.promise;
   const pages = [];
+  const pageRecords = [];
   let hiddenCount = 0;
 
-  for (let pageNumber = 1; pageNumber <= pdf.numPages; pageNumber += 1) {
-    setStatus(`${pdf.numPages} ページ中 ${pageNumber} ページを抽出中…`);
-    const page = await pdf.getPage(pageNumber);
+  for (let pageNumber = 1; pageNumber <= analysisPdf.numPages; pageNumber += 1) {
+    setStatus(`${analysisPdf.numPages} ページ中 ${pageNumber} ページを解析中…`);
+    const page = await analysisPdf.getPage(pageNumber);
     const textContent = await page.getTextContent({ includeMarkedContent: true });
     const text = textForPage(textContent.items);
     const candidates = hiddenTextCandidates(await page.getOperatorList());
+    const groups = candidateItemGroups(textContent.items, candidates);
     hiddenCount += candidates.length;
     pages.push(`--- Page ${pageNumber} ---\n${text}`);
+    pageRecords.push({ text, textContent, candidates, groups, styles: textContent.styles });
+  }
+
+  setStatus(`不可視候補 ${hiddenCount} 件をPDFへ書き込んでいます…`);
+  repairedPdfBytes = await repairPdf(sourceBytes, pageRecords);
+  const displayTask = pdfjsLib.getDocument({ data: repairedPdfBytes.slice() });
+  const displayPdf = await displayTask.promise;
+
+  for (let pageNumber = 1; pageNumber <= displayPdf.numPages; pageNumber += 1) {
+    setStatus(`${displayPdf.numPages} ページ中 ${pageNumber} ページを描画中…`);
+    const page = await displayPdf.getPage(pageNumber);
+    const { text, textContent, candidates, groups } = pageRecords[pageNumber - 1];
 
     const clone = pageTemplate.content.cloneNode(true);
     const pageWrap = clone.querySelector(".page-canvas-wrap");
@@ -231,7 +315,7 @@ async function extract(file) {
       }
       candidateBox.hidden = false;
     }
-    for (const group of candidateItemGroups(textContent.items, candidates)) {
+    for (const group of groups) {
       for (const item of group.items) {
         placeCandidateItem(overlay, item, textContent.styles, viewport, group.candidate.reason);
       }
@@ -245,7 +329,8 @@ async function extract(file) {
   searchInput.disabled = false;
   copyButton.disabled = false;
   downloadButton.disabled = false;
-  setStatus(`${pdf.numPages} ページを描画し、不可視候補 ${hiddenCount} 件を復元しました。`);
+  downloadPdfButton.disabled = false;
+  setStatus(`${displayPdf.numPages} ページを修復し、不可視文字 ${hiddenCount} 件をPDFへ書き込みました。`);
 }
 
 fileInput.addEventListener("change", async () => {
@@ -280,4 +365,16 @@ downloadButton.addEventListener("click", () => {
   link.click();
   URL.revokeObjectURL(url);
   setStatus("TXTファイルを保存しました。");
+});
+
+downloadPdfButton.addEventListener("click", () => {
+  if (!repairedPdfBytes) return;
+  const blob = new Blob([repairedPdfBytes], { type: "application/pdf" });
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = `${documentName}-repaired.pdf`;
+  link.click();
+  URL.revokeObjectURL(url);
+  setStatus("修復済みPDFを保存しました。");
 });

@@ -20,9 +20,10 @@
     <main>
       <section class="controls" aria-label="Controls">
         <label>検索 <input id="search" type="search" placeholder="抽出済みテキストを検索" disabled></label>
-        <label class="toggle"><input id="show-hidden" type="checkbox" checked> 不可視文字をページ上に表示</label>
+        <label class="toggle"><input id="show-hidden" type="checkbox"> 検出位置を強調表示</label>
         <button id="copy" type="button" disabled>全テキストをコピー</button>
         <button id="download" type="button" disabled>TXTで保存</button>
+        <button id="download-pdf" type="button" disabled>修復PDFを保存</button>
         <span id="status" role="status">PDFを選択してください。</span>
       </section>
       <p class="notice">この拡張機能はローカルで処理します。ファイル内容をネットワークへ送信しません。画像だけで構成されたスキャンPDFにはOCRが必要です。</p>
