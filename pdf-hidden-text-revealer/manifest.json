@@ -1,0 +1,14 @@
+{
+  "manifest_version": 3,
+  "name": "PDF Hidden Text Revealer",
+  "description": "Extracts every text object from a PDF into a readable, searchable view.",
+  "version": "0.1.0",
+  "action": {
+    "default_title": "Open PDF Hidden Text Revealer"
+  },
+  "background": {
+    "service_worker": "background.js",
+    "type": "module"
+  },
+  "permissions": ["tabs"]
+}

@@ -1,0 +1,52 @@
+<!doctype html>
+<html lang="ja">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>PDF Hidden Text Revealer</title>
+    <link rel="stylesheet" href="viewer.css">
+  </head>
+  <body>
+    <header>
+      <div>
+        <h1>PDF Hidden Text Revealer</h1>
+        <p>PDFの描画設定に関係なく、埋め込まれたテキストを抽出して読みやすく表示します。</p>
+      </div>
+      <label class="file-picker">
+        PDFを選択
+        <input id="file-input" type="file" accept="application/pdf,.pdf">
+      </label>
+    </header>
+    <main>
+      <section class="controls" aria-label="Controls">
+        <label>検索 <input id="search" type="search" placeholder="抽出済みテキストを検索" disabled></label>
+        <label class="toggle"><input id="show-hidden" type="checkbox" checked> 不可視文字をページ上に表示</label>
+        <button id="copy" type="button" disabled>全テキストをコピー</button>
+        <button id="download" type="button" disabled>TXTで保存</button>
+        <span id="status" role="status">PDFを選択してください。</span>
+      </section>
+      <p class="notice">この拡張機能はローカルで処理します。ファイル内容をネットワークへ送信しません。画像だけで構成されたスキャンPDFにはOCRが必要です。</p>
+      <section id="results" aria-live="polite"></section>
+    </main>
+    <template id="page-template">
+      <article class="page-result">
+        <h2></h2>
+        <div class="page-stage">
+          <div class="page-canvas-wrap">
+            <canvas></canvas>
+            <div class="hidden-text-overlay" aria-label="復元した不可視テキスト"></div>
+          </div>
+        </div>
+        <section class="hidden-candidates" hidden>
+          <h3>復元した不可視テキスト</h3>
+          <ul></ul>
+        </section>
+        <details class="transcript">
+          <summary>抽出テキストを表示</summary>
+          <pre></pre>
+        </details>
+      </article>
+    </template>
+    <script type="module" src="viewer.js"></script>
+  </body>
+</html>
