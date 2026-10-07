@@ -1,0 +1,22 @@
+# Copy to ~/.config/manaba-folder-sync/config.toml, then replace the token.
+# Every path must remain inside ~/Documents; the service rejects other targets.
+[server]
+host = "127.0.0.1"
+port = 8765
+token = "replace-with-a-long-random-token"
+
+[manaba]
+base_url = "https://tid.manaba.jp"
+allowed_hosts = ["tid.manaba.jp"]
+
+[storage]
+root = "~/Documents"
+collision_policy = "rename" # rename | overwrite | error
+
+# Course-folder dictionary. Add only courses the extension may save into.
+# Key: course ID from a URL such as /ct/course_1234567_home
+# Value: name (for display) and a destination path below storage.root.
+# Copy this whole three-line block for each course.
+[courses."1234567"]
+name = "Example course"
+path = "~/Documents/University/2026-autumn/Example course"

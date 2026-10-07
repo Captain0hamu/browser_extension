@@ -1,0 +1,28 @@
+{
+  "manifest_version": 2,
+  "name": "manaba Folder Sync",
+  "version": "0.2.0",
+  "description": "Save a selected manaba resource to the configured local course folder.",
+  "permissions": [
+    "cookies",
+    "contextMenus",
+    "notifications",
+    "storage",
+    "tabs",
+    "nativeMessaging",
+    "clipboardWrite",
+    "https://portal.tid.ac.jp/*",
+    "https://login.microsoftonline.com/*",
+    "https://tid.manaba.jp/*",
+    "http://127.0.0.1/*"
+  ],
+  "background": { "scripts": ["background.js"] },
+  "browser_action": { "default_title": "manaba Folder Sync", "default_popup": "popup.html" },
+  "content_scripts": [{
+    "matches": ["https://portal.tid.ac.jp/*", "https://login.microsoftonline.com/*"],
+    "js": ["login-fill.js"],
+    "run_at": "document_idle"
+  }],
+  "options_ui": { "page": "options.html", "open_in_tab": true },
+  "applications": { "gecko": { "id": "manaba-folder-sync@local" } }
+}

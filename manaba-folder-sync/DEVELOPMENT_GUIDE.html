@@ -1,0 +1,225 @@
+<!doctype html>
+<html lang="ja">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>manaba Folder Sync 実装・改造ガイド</title>
+  <style>
+    :root { color-scheme: light dark; --paper: #fff; --ink: #1d2733; --muted: #536170; --line: #d7dfe7; --accent: #075b9b; --code: #f3f6f8; }
+    * { box-sizing: border-box; }
+    body { background: var(--paper); color: var(--ink); font-family: system-ui, sans-serif; line-height: 1.7; margin: 0; }
+    header, main { max-width: 980px; margin: auto; padding: 2rem; }
+    header { border-bottom: 1px solid var(--line); }
+    h1 { margin-bottom: .25rem; } h2 { border-bottom: 2px solid var(--line); margin-top: 3rem; padding-bottom: .35rem; } h3 { margin-top: 2rem; }
+    .lead, .note { background: #edf6fc; border-left: 4px solid var(--accent); padding: 1rem 1.25rem; }
+    .note { background: #fff6df; border-color: #ae7200; }
+    code, pre { font-family: ui-monospace, SFMono-Regular, Consolas, monospace; }
+    code { background: var(--code); padding: .1em .3em; } pre { background: var(--code); border: 1px solid var(--line); overflow: auto; padding: 1rem; }
+    table { border-collapse: collapse; width: 100%; } th, td { border: 1px solid var(--line); padding: .55rem .7rem; text-align: left; vertical-align: top; } th { background: var(--code); }
+    a { color: var(--accent); } nav ul { columns: 2; padding-left: 1.25rem; } .flow { display: grid; gap: .5rem; margin: 1rem 0; } .flow div { border: 1px solid var(--line); border-radius: .4rem; padding: .7rem; } .arrow { color: var(--accent); font-weight: bold; text-align: center; }
+    @media (prefers-color-scheme: dark) { :root { --paper:#15191e; --ink:#e7edf3; --muted:#b4c0cb; --line:#384552; --accent:#74c2ff; --code:#202832; } .lead { background:#163247; } .note { background:#392d14; } }
+    @media print { header, main { max-width: none; padding: 1cm; } a { color: inherit; } }
+  </style>
+</head>
+<body>
+<header>
+  <h1>manaba Folder Sync 実装・改造ガイド</h1>
+  <p>このHTMLは、あとで自分で読み、仕組みを理解して安全に改造するための設計メモです。対象のコードはこのファイルと同じディレクトリにあります。</p>
+  <nav>
+    <ul>
+      <li><a href="#purpose">何をするプロジェクトか</a></li>
+      <li><a href="#web-basics">Web未経験者向けの基礎</a></li>
+      <li><a href="#reading-order">おすすめの読み順</a></li>
+      <li><a href="#layout">ファイル構成</a></li>
+      <li><a href="#flows">二つの処理フロー</a></li>
+      <li><a href="#backend">PythonローカルAPI</a></li>
+      <li><a href="#extension">Firefox拡張</a></li>
+      <li><a href="#config">設定ファイル</a></li>
+      <li><a href="#customize">よくある改造</a></li>
+      <li><a href="#test">テストとデバッグ</a></li>
+      <li><a href="#security">安全上の約束</a></li>
+    </ul>
+  </nav>
+</header>
+<main>
+  <section id="purpose">
+    <h2>何をするプロジェクトか</h2>
+    <p>Firefoxでログイン済みのmanabaから資料をダウンロードし、コースIDに対応するローカルフォルダーへ保存する仕組みです。加えて、Firefoxのポップアップから現在manabaで選択できるコースを取得し、<code>~/Documents</code>直下のフォルダーと照合して、設定に追加できる候補を作れます。</p>
+    <p class="lead">大事な分担: 拡張機能はブラウザーのCookieを読めるがローカルファイルを書かない。Pythonサービスはローカルファイルを書けるがCookieを保存しない。両者は <code>127.0.0.1</code> のAPIとトークンでつながります。</p>
+  </section>
+
+  <section id="web-basics">
+    <h2>Web未経験者向けの基礎</h2>
+    <p>このプロジェクトには「画面を作る側」と「ファイル操作をする側」があります。Web開発は初めてでも、前者を小さなGUIプログラム、後者をローカルで動くPythonプログラムだと考えると理解しやすいです。</p>
+    <h3>HTML、CSS、JavaScriptは何か</h3>
+    <table>
+      <tr><th>言葉</th><th>このプロジェクトでの役割</th><th>たとえ</th></tr>
+      <tr><td>HTML</td><td>画面にボタン、見出し、結果リストを置く。</td><td>部屋の骨組みと家具の配置</td></tr>
+      <tr><td>CSS</td><td>文字サイズ、余白、色など見た目を指定する。</td><td>壁紙や照明</td></tr>
+      <tr><td>JavaScript</td><td>ボタンが押されたときにAPIを呼び、結果を画面へ入れる。</td><td>スイッチを押すと動く仕掛け</td></tr>
+      <tr><td>Python</td><td>manabaへ問い合わせ、フォルダーを調べ、資料を保存する。</td><td>バックヤードの作業員</td></tr>
+    </table>
+    <p><code>popup.html</code>の末尾にある<code>&lt;script src="popup.js"&gt;</code>は「この画面を開いたらpopup.jsも実行する」という意味です。HTMLの<code>id="generate"</code>はボタンにつけた固有の名札で、JavaScriptの<code>document.querySelector("#generate")</code>がその名札を使ってボタンを見つけます。</p>
+    <h3>イベント駆動とは</h3>
+    <p>普通のPythonスクリプトは上から下まで実行して終わります。一方、ブラウザーのJavaScriptは画面を表示したあと待機し、クリックなどの<strong>イベント</strong>が発生したときに登録した処理を動かします。次の形は「generateボタンがクリックされたら、右側の非同期関数を実行する」です。</p>
+    <pre>generate.addEventListener("click", async () =&gt; {
+  // Cookieを取り、APIへ問い合わせ、画面を更新する
+});</pre>
+    <p><code>async</code>と<code>await</code>は、ネットワークやCookie取得のような「返事が来るまで時間がかかる処理」を扱うための記法です。<code>await fetch(...)</code>の行では、画面全体を止めずにAPIの返答を待ち、返答後に次の行へ進みます。</p>
+    <h3>HTTP APIとJSON</h3>
+    <p>APIはプログラム同士の窓口です。このプロジェクトではFirefox拡張が客、Pythonサービスが店員です。拡張はURL、HTTPメソッド、ヘッダー、本文を送ります。PythonはステータスコードとJSONを返します。</p>
+    <table>
+      <tr><th>要素</th><th>例</th><th>意味</th></tr>
+      <tr><td>URL</td><td><code>http://127.0.0.1:8765/v1/courses/mapping-candidates</code></td><td>ローカルサービス内の「対応表候補」窓口</td></tr>
+      <tr><td>POST</td><td><code>method: "POST"</code></td><td>データを渡して処理を依頼する操作</td></tr>
+      <tr><td>Header</td><td><code>Authorization: Bearer ...</code></td><td>ローカルAPIを勝手なページから使わせない合言葉</td></tr>
+      <tr><td>JSON本文</td><td><code>{"cookies": [...]}</code></td><td>キーと値で表したデータ。JavaScriptのオブジェクトに近い。</td></tr>
+      <tr><td>200</td><td>成功</td><td>結果JSONを読んでよい</td></tr>
+      <tr><td>401 / 4xx</td><td>失敗</td><td>ログイン、token、入力などを確認する</td></tr>
+    </table>
+    <p><code>127.0.0.1</code>は「このPC自身」を指す特別なIPアドレスです。つまりこの通信は大学サーバーではなく、自分のPCのFirefoxとPythonサービスの間だけで行われます。ただしCookieを本文に含めるので、API URLを安易に外部URLへ変更してはいけません。</p>
+    <h3>Firefox拡張は普通のWebページと何が違うか</h3>
+    <p>普通のWebページは、そのページの権限だけを持ちます。拡張はユーザーが<code>manifest.json</code>で許可した権限を持ち、Cookie、右クリックメニュー、現在のタブなどを扱えます。その代わり、権限を増やす変更は慎重に読む必要があります。ポップアップはアイコンを押している間だけ表示される小さなHTMLページ、background.jsは右クリックを待つための常駐処理です。</p>
+  </section>
+
+  <section id="reading-order">
+    <h2>おすすめの読み順と実際に追う方法</h2>
+    <p>一度に全ファイルを理解しようとせず、画面上の一操作を入口にしてデータの流れを追います。以下の順にエディタで二画面表示すると分かりやすいです。</p>
+    <ol>
+      <li><code>extension/popup.html</code>を開く。<code>id</code>が付いたボタン・リストを見つける。これは「画面に何が存在するか」です。</li>
+      <li><code>extension/popup.js</code>を開く。<code>generate.addEventListener</code>から読み始める。画面の入力→Cookie→<code>fetch</code>→表示の順を追う。</li>
+      <li><code>service.py</code>で<code>@app.post("/v1/courses/mapping-candidates")</code>を検索する。同じURLを探せば、JavaScript側とPython側がつながる。</li>
+      <li>その関数が呼ぶ<code>fetch_current_courses</code>と<code>build_mapping_candidates</code>を読む。前者はネットワーク、後者はローカルフォルダー照合であり、役割が分かれている。</li>
+      <li><code>config.py</code>で<code>Settings</code>を見る。サービスがどの設定を受け取っているか理解する。</li>
+      <li>最後に<code>tests/test_service.py</code>を見る。「こう動くべき」という短い仕様書として読める。</li>
+    </ol>
+    <p>エディタで名前を右クリックして「定義へ移動」、または全文検索を使うのが有効です。例えば<code>mapping-candidates</code>を検索すると、バックエンド実装、ポップアップ呼び出し、READMEの説明を横断して見られます。</p>
+    <p class="note">初めは全ての記号を理解しなくて大丈夫です。「この値はどこで作られ、どこに渡され、何になるか」を一本ずつ追う読み方が最も確実です。特にCookie、course_id、path、tokenの四つを追えるようになると、全体像がつかめます。</p>
+  </section>
+
+  <section id="layout">
+    <h2>まず見るファイル</h2>
+    <table>
+      <tr><th>場所</th><th>役割</th><th>改造するときの目安</th></tr>
+      <tr><td><code>manaba_folder_sync/service.py</code></td><td>FastAPIの全エンドポイント、Cookie検査、manaba取得、保存先判定</td><td>機能の中心。新しいAPIや照合ルールはここ。</td></tr>
+      <tr><td><code>manaba_folder_sync/config.py</code></td><td>TOMLを読み、設定を<code>Settings</code>に変換・検証</td><td>設定項目を増やすならここも変更する。</td></tr>
+      <tr><td><code>manaba_folder_sync/cli.py</code></td><td><code>init</code>、<code>serve</code>、native hostの導入</td><td>コマンドを追加したいとき。</td></tr>
+      <tr><td><code>extension/background.js</code></td><td>右クリック保存。資料リンクと現在タブのコースIDをAPIへ送る</td><td>保存操作・通知を変えるとき。</td></tr>
+      <tr><td><code>extension/popup.html</code> / <code>popup.js</code></td><td>現行コース対応表の生成画面</td><td>画面やコピー形式を変えるとき。</td></tr>
+      <tr><td><code>extension/manifest.json</code></td><td>Firefoxへの権限と読み込むJS/画面の宣言</td><td>新しい画面、権限、対象サイトを加えるとき。</td></tr>
+      <tr><td><code>config.example.toml</code></td><td>ユーザーがコピーして使う設定のひな型</td><td>設定の説明を変えたら必ず同期する。</td></tr>
+      <tr><td><code>tests/test_service.py</code></td><td>純粋なPython処理の回帰テスト</td><td>仕様を変えたら先にここへテストを足す。</td></tr>
+    </table>
+  </section>
+
+  <section id="flows">
+    <h2>二つの処理フロー</h2>
+    <h3>1. 資料を右クリックして保存</h3>
+    <div class="flow">
+      <div>Firefox: manabaの資料リンクを右クリック</div><div class="arrow">↓</div>
+      <div><code>background.js</code>: タブURLの <code>course_123...</code> からIDを読む。Cookie・リンクURL・Refererを集める。</div><div class="arrow">↓</div>
+      <div><code>POST /v1/downloads</code>: token、URLのホスト、コースID、保存先を検証する。</div><div class="arrow">↓</div>
+      <div><code>service.py</code>: Cookie付きで資料を取得し、設定済みフォルダーへ一時ファイル経由で保存する。</div>
+    </div>
+    <h3>2. 現行コースから対応表候補を生成</h3>
+    <div class="flow">
+      <div>manabaを開いたタブで拡張機能アイコンを押す</div><div class="arrow">↓</div>
+      <div><code>popup.js</code>: Cookieを取得し、<code>POST /v1/courses/mapping-candidates</code>へ送る。</div><div class="arrow">↓</div>
+      <div><code>fetch_current_courses()</code>: <code>/ct/</code>を取得し、コースリンクからID・表示名を抽出する。</div><div class="arrow">↓</div>
+      <div><code>build_mapping_candidates()</code>: 保存ルート直下のフォルダー名と比較し、4分類の結果を返す。</div><div class="arrow">↓</div>
+      <div>ポップアップ: 一致分だけをコピー可能なTOMLにする。設定ファイルは自動変更しない。</div>
+    </div>
+  </section>
+
+  <section id="backend">
+    <h2>PythonローカルAPIを読む</h2>
+    <h3>データモデル</h3>
+    <p><code>BrowserCookie</code>は拡張から受け取る最小限のCookie情報です。<code>CookieRequest</code>はコース取得用、<code>DownloadRequest</code>は資料保存用です。Pydanticの型と長さ制限により、予想外の入力を早い段階で拒否します。</p>
+    <p>候補APIの返り値は<code>MappingCandidates</code>です。中身は以下です。</p>
+    <pre>{
+  "matches": [{"id": "123", "name": "Database", "path": "/home/me/Documents/Database"}],
+  "unmatched_courses": [{"id": "456", "name": "Networks", "configured_path": null}],
+  "registered_courses": [{"id": "789", "name": "Math", "configured_path": "/home/me/Documents/Math"}],
+  "unused_folders": ["/home/me/Documents/Old course"]
+}</pre>
+    <h3>現在のコースを取る仕組み</h3>
+    <p><code>fetch_current_courses()</code>は、リクエストで届いたCookieをHTTPヘッダーにだけ入れて<code>https://tid.manaba.jp/ct/</code>を取得します。応答先が許可ホスト外、または<code>/ct</code>配下でなければログイン切れとして401にします。HTMLは<code>CourseLinkParser</code>で走査し、URL内の<code>course_数字</code>とリンク文字列を集めます。</p>
+    <p>manabaのHTML構造が変わったときは、まずこのパーサーが正しいリンクを拾えるか確認してください。ブラウザーの開発者ツールで<code>/ct/</code>のコースリンクのURLを確認し、必要なら<code>COURSE_ID_RE</code>または<code>CourseLinkParser</code>を修正します。</p>
+    <h3>フォルダー照合の仕組み</h3>
+    <p><code>direct_folders()</code>は<code>settings.storage_root</code>の直下だけを<code>iterdir()</code>で列挙し、隠しフォルダー（名前が<code>.</code>で始まるもの）とファイルを除きます。再帰検索しないことが仕様です。</p>
+    <p><code>normalized_name()</code>はUnicodeをNFKC正規化し、<code>casefold()</code>した後、空白・<code>_</code>・<code>-</code>を消します。従って<code>Data Base</code>、<code>data_base</code>、<code>DATA-base</code>は一致します。一方、翻訳、略称、部分一致、似た文字列は推測しません。</p>
+    <p class="note">同じ名前の現行コースが複数ある場合、一つのフォルダーを二重に候補化しません。先に見つかった一件だけを一致にし、残りは未一致にします。誤った保存先を作るより確認を促すためです。</p>
+    <h3>APIを増やす型</h3>
+    <ol>
+      <li><code>service.py</code>でリクエスト・レスポンス用のPydanticモデルを作る。</li>
+      <li><code>create_app()</code>内にエンドポイントを置く。</li>
+      <li>認証が必要なら最初に<code>authorize(authorization)</code>を呼ぶ。</li>
+      <li>外部URL、ファイルパス、Cookieを使うなら既存の検証関数を流用する。</li>
+      <li>テスト、README、拡張側の呼び出しを同時に更新する。</li>
+    </ol>
+  </section>
+
+  <section id="extension">
+    <h2>Firefox拡張を読む</h2>
+    <h3>manifest.json</h3>
+    <p><code>permissions</code>は拡張ができることの一覧です。<code>cookies</code>はmanaba Cookie取得、<code>tabs</code>は現在タブの確認、<code>storage</code>はAPI URL/token保存、<code>clipboardWrite</code>は候補TOMLのコピーに必要です。対象ドメインとローカルAPIのURLパターンもここで許可します。</p>
+    <p><code>browser_action.default_popup</code>が<code>popup.html</code>を指定します。変更後は一時アドオンを「再読み込み」しないと反映されません。</p>
+    <h3>popup.js</h3>
+    <p>ボタンを押すと、まず現在タブのホストが<code>tid.manaba.jp</code>かを確認します。次に<code>browser.cookies.getAll()</code>でCookieを取り、保存済みのAPI URL/tokenとともに候補APIへPOSTします。結果は<code>textContent</code>で表示しているため、コース名をHTMLとして解釈しません。</p>
+    <p><code>tomlString()</code>はJavaScriptの<code>JSON.stringify</code>で文字列を引用します。JSON文字列の引用規則はTOMLの基本文字列と互換性があるため、引用符や改行を含むコース名でも、コピーする文字列を壊しにくくしています。</p>
+    <h3>background.js</h3>
+    <p>こちらはポップアップとは独立して常駐し、右クリックメニューを登録します。<code>courseId()</code>はタブURLからコースIDを読むため、コース配下ページ以外で保存を試すと止まります。これは資料URLだけを偽装して別コースの保存先を指定させないための第一段階の検査です。API側でも再検査します。</p>
+  </section>
+
+  <section id="config">
+    <h2>設定ファイルと保存先</h2>
+    <p>実際の設定は通常<code>~/.config/manaba-folder-sync/config.toml</code>です。<code>MANABA_SYNC_CONFIG</code>環境変数を指定すると別の場所を使えます。読み込みは<code>config.py</code>の<code>load_settings()</code>です。</p>
+    <pre>[storage]
+root = "~/Documents"
+collision_policy = "rename"
+
+[courses."1234567"]
+name = "Database"
+path = "~/Documents/Database"</pre>
+    <p><code>path</code>は必ず<code>storage.root</code>の内部でなければなりません。読み込み時に絶対パスへ解決して<code>is_relative_to()</code>で検査します。候補生成APIは設定に書き込まないので、コピー後に自分で内容を確認し、このTOMLへ追加します。</p>
+  </section>
+
+  <section id="customize">
+    <h2>よくある改造</h2>
+    <h3>照合ルールを変える</h3>
+    <p><code>normalized_name()</code>だけを変えると比較ルールが変わります。例えば括弧内の曜日を無視したいなら正規表現を追加できます。ただし文字を多く消すほど別の授業を誤一致させやすくなります。変更前に、区別したい名前が同じ正規化結果にならないかテストを追加してください。</p>
+    <h3>Documentsのサブフォルダーも探す</h3>
+    <p><code>direct_folders()</code>の<code>root.iterdir()</code>を<code>root.rglob("*")</code>へ変えると実現できますが、同名フォルダー、過去授業、意図しない大規模走査が増えます。やるなら「何階層まで」「重複時はどうするか」を決め、返すパスをユーザーが識別できる表示にしてください。</p>
+    <h3>TOMLの出力を変える</h3>
+    <p><code>popup.js</code>の<code>toml = data.matches.map(...)</code>がコピー形式です。コメントを付ける、絶対パスを<code>~/Documents</code>形式に直す、表示名ではなくフォルダー名を<code>name</code>へ使う、といった変更はここです。TOMLの引用処理は残してください。</p>
+    <h3>別のmanabaホストに対応する</h3>
+    <p><code>config.toml</code>の<code>manaba.base_url</code>と<code>allowed_hosts</code>、さらに<code>manifest.json</code>のURL権限、<code>background.js</code>/<code>popup.js</code>の固定ホスト定数を同時に見直す必要があります。一箇所だけ変えるとCookieが取れない、またはAPIが拒否する状態になります。</p>
+  </section>
+
+  <section id="test">
+    <h2>テストとデバッグ</h2>
+    <p>Nix環境でテストを実行します。リポジトリ全体がGitに未登録の作業中でも使えるよう、以下では<code>path:</code>指定を使います。</p>
+    <pre>nix develop --impure path:/home/nix/dev/manaba-folder-sync --command pytest -q</pre>
+    <p>JavaScriptとmanifestだけ素早く確認するなら次です。</p>
+    <pre>node --check extension/background.js
+node --check extension/popup.js
+python -m json.tool extension/manifest.json &gt; /dev/null</pre>
+    <p>Pythonの照合ルールは<code>tests/test_service.py</code>でテストしています。新しい正常系だけでなく、古い授業フォルダーが候補に出ないこと、隠しフォルダーが出ないこと、既登録コースが重複候補にならないことを守ってください。</p>
+    <p>ブラウザー側の確認手順は、Firefoxで一時アドオンを読み込み、設定画面にtokenを入れ、manabaを開いてアイコンを押す、です。ポップアップを右クリックして「要素を調査」すると、その画面専用の開発者ツールでエラーを見られます。Python側は<code>python -m manaba_folder_sync.cli serve</code>を起動した端末の出力で確認します。</p>
+  </section>
+
+  <section id="security">
+    <h2>安全上の約束（改造時に壊さない）</h2>
+    <ul>
+      <li>Cookieやパスワードを設定ファイル、ログ、画面、永続ストレージへ書かない。Cookieはリクエスト中だけ使う。</li>
+      <li>ローカルAPIは<code>127.0.0.1</code>で待ち受け、tokenなしで操作させない。</li>
+      <li>ダウンロード元・リダイレクト先は許可したHTTPSホストだけにする。</li>
+      <li>コースIDとページURLのIDが矛盾したら保存しない。</li>
+      <li>保存先が<code>storage.root</code>外へ出ない検査を外さない。</li>
+      <li>候補生成は読み取り専用に保つ。自動で<code>config.toml</code>を編集するなら、少なくとも明示確認・バックアップ・構文検証を別途設計する。</li>
+    </ul>
+    <p class="lead">迷ったときの基準は「一致しないなら候補にしない」「保存できないなら止める」です。資料が一件保存されない不便さより、別授業のフォルダーへ保存する事故を避ける方を優先しています。</p>
+  </section>
+</main>
+</body>
+</html>

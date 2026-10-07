@@ -1,0 +1,9 @@
+__pycache__/
+*.pyc
+.venv/
+dist/
+*.egg-info/
+
+# The real configuration contains an API token and must stay outside Git.
+config.toml
+

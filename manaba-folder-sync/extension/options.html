@@ -1,0 +1,13 @@
+<!doctype html>
+<html lang="ja">
+  <meta charset="utf-8">
+  <title>manaba Folder Sync 設定</title>
+  <style>body { font: menu; margin: 2rem; max-width: 44rem } label { display:block; margin-top: 1rem } input { box-sizing:border-box; padding:.45rem; width:100% } button { margin-top: 1rem; padding:.45rem .8rem }</style>
+  <h1>manaba Folder Sync</h1>
+  <p>ローカルで起動したAPIだけに接続します。</p>
+  <label>API URL <input id="apiUrl" type="url"></label>
+  <label>API token <input id="token" type="password"></label>
+  <label><input id="autoSubmit" type="checkbox"> ID・パスワード入力後に送信も自動化する（MFAは手動）</label>
+  <button id="save">保存</button><span id="status"></span>
+  <script src="options.js"></script>
+</html>

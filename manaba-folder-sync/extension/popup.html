@@ -1,0 +1,22 @@
+<!doctype html>
+<html lang="ja">
+  <meta charset="utf-8">
+  <title>manaba Folder Sync</title>
+  <style>
+    body { font: menu; margin: 12px; min-width: 360px; max-width: 520px; }
+    button { padding: .45rem .7rem; } #status { margin: .75rem 0; white-space: pre-wrap; }
+    section { margin-top: 1rem; } h2 { font-size: 1rem; margin: 0 0 .35rem; }
+    ul { margin: .25rem 0; padding-left: 1.4rem; } code { white-space: pre-wrap; }
+    #copy { margin-top: .5rem; } .error { color: #a40000; }
+  </style>
+  <h1>manaba Folder Sync</h1>
+  <button id="generate">現行コースから対応表を作成</button>
+  <p id="status"></p>
+  <main id="results" hidden>
+    <section><h2>一致（追加候補）</h2><ul id="matches"></ul><button id="copy" hidden>一致結果をTOMLとしてコピー</button></section>
+    <section><h2>未一致の現行コース</h2><ul id="unmatched"></ul></section>
+    <section><h2>登録済み</h2><ul id="registered"></ul></section>
+    <section><h2>未使用の Documents 直下フォルダー</h2><ul id="unused"></ul></section>
+  </main>
+  <script src="popup.js"></script>
+</html>

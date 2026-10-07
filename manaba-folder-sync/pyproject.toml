@@ -1,0 +1,25 @@
+[project]
+name = "manaba-folder-sync"
+version = "0.1.0"
+description = "Local API that saves manaba files into per-course folders"
+requires-python = ">=3.11"
+dependencies = [
+  "fastapi>=0.115,<1",
+  "httpx>=0.27,<1",
+  "uvicorn[standard]>=0.30,<1",
+]
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+include = ["manaba_folder_sync*"]
+
+[project.scripts]
+manaba-folder-sync = "manaba_folder_sync.cli:main"
+manaba-folder-sync-native-host = "manaba_folder_sync.native_host:main"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]
